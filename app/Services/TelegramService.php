@@ -158,7 +158,7 @@ class TelegramService
 
         $buttons = $tasks->map(function($task){
             $label = $task->is_done ? "✅ {$task->title}" : "⬜ {$task->title}";
-            return [['text' => $label, 'callback_data' => "complete_task:{$task->id}"]];
+            return [['text' => $label, 'callback_data' => "confirm_task:{$task->id}"]];
         })->all();
 
         $this->sendMessage($chatId, "📋 <b>Bugungi tasklaringiz</b> (bajarish uchun bosing):", $buttons, 'HTML');
@@ -634,6 +634,16 @@ class TelegramService
         $messageId = $callbackQuery['message']['message_id'];
         $telegramId = $callbackQuery['from']['id'] ?? null;
 
+        if(str_starts_with($data, 'confirm_task:')){
+            $this->handleConfirmTaskCallback($callbackId, $chatId, $data);
+            return;
+        }
+
+        if(str_starts_with($data, 'cancel_task:')){
+            $this->handleCancelTaskCallback($callbackId, $chatId, $messageId, $data);
+            return;
+        }
+
         if(str_starts_with($data, 'complete_task:')){
             $this->handleCompleteTaskCallback($callbackId, $chatId, $messageId, $data);
             return;
@@ -743,6 +753,35 @@ class TelegramService
         $this->answerCallbackQuery($callbackId);
     }
 
+    private function handleConfirmTaskCallback(string $callbackId, int $chatId, string $data){
+        $taskId = (int) str_replace('confirm_task:', '', $data);
+        $task = DailyPlanTask::find($taskId);
+
+        if(!$task){
+            $this->answerCallbackQuery($callbackId, "Task topilmadi");
+            return;
+        }
+
+        $this->answerCallbackQuery($callbackId);
+
+        if($task->is_done){
+            $this->sendMessage($chatId, "✅ \"{$task->title}\" allaqachon bajarilgan.");
+            return;
+        }
+
+        $this->sendMessage($chatId, "\"{$task->title}\" ni bajardingizmi?", [
+            [
+                ['text' => '✅ Ha', 'callback_data' => "complete_task:{$task->id}"],
+                ['text' => '❌ Yo\'q', 'callback_data' => "cancel_task:{$task->id}"],
+            ],
+        ]);
+    }
+
+    private function handleCancelTaskCallback(string $callbackId, int $chatId, int $messageId, string $data){
+        $this->answerCallbackQuery($callbackId, "Bekor qilindi");
+        $this->editMessageText($chatId, $messageId, "❌ Bekor qilindi", []);
+    }
+
     private function handleCompleteTaskCallback(string $callbackId, int $chatId, int $messageId, string $data){
         $taskId = (int) str_replace('complete_task:', '', $data);
         $task = DailyPlanTask::find($taskId);
@@ -759,14 +798,18 @@ class TelegramService
 
         $message = str_replace('{title}', $task->title, self::COMPLETION_MESSAGES[array_rand(self::COMPLETION_MESSAGES)]);
         $this->answerCallbackQuery($callbackId, $wasAlreadyDone ? "Allaqachon bajarilgan ✅" : "Bajarildi! ✅");
-        $this->editMessageText($chatId, $messageId, $message);
+        $this->editMessageText($chatId, $messageId, $message, []);
 
         if(!$wasAlreadyDone){
-            $this->celebrateIfAllDone($task->dailyPlan);
+            $allDone = $this->celebrateIfAllDone($task->dailyPlan);
+            if(!$allDone){
+                $this->sendRemainingTasksNote($task->dailyPlan);
+            }
         }
     }
 
-    private function celebrateIfAllDone(DailyPlan $dailyPlan){
+    private function celebrateIfAllDone(DailyPlan $dailyPlan): bool
+    {
         $dailyPlan->loadMissing(['tasks', 'user']);
         $tasks = $dailyPlan->tasks;
 
@@ -777,7 +820,22 @@ class TelegramService
                 null,
                 'HTML'
             );
+            return true;
         }
+
+        return false;
+    }
+
+    private function sendRemainingTasksNote(DailyPlan $dailyPlan){
+        $dailyPlan->loadMissing(['tasks', 'user']);
+        $remaining = $dailyPlan->tasks->where('is_done', false);
+
+        if($remaining->isEmpty()){
+            return;
+        }
+
+        $list = $remaining->map(fn($task) => "• {$task->title}")->implode("\n");
+        $this->sendMessage($dailyPlan->user->telegram_id, "📌 Yana shular qoldi:\n{$list}");
     }
 
     private function handleFriendResponseCallback(string $callbackId, int $chatId, int $messageId, string $data){
@@ -792,14 +850,14 @@ class TelegramService
         if($action === 'accept_friend'){
             $this->friendshipService->accept($friendship);
             $this->answerCallbackQuery($callbackId, "Qabul qilindi");
-            $this->editMessageText($chatId, $messageId, "✅ Siz endi {$friendship->user->name} bilan do'stsiz");
+            $this->editMessageText($chatId, $messageId, "✅ Siz endi {$friendship->user->name} bilan do'stsiz", []);
             $this->sendMessage($friendship->user->telegram_id, "{$friendship->friend->name} sizning do'stlik so'rovingizni qabul qildi!");
             return;
         }
 
         $this->friendshipService->decline($friendship);
         $this->answerCallbackQuery($callbackId, "Rad etildi");
-        $this->editMessageText($chatId, $messageId, "❌ So'rov rad etildi");
+        $this->editMessageText($chatId, $messageId, "❌ So'rov rad etildi", []);
     }
 
     private function handlePlanDurationCallback(string $callbackId, int $chatId, int $messageId, ?int $telegramId, string $data){
@@ -1177,7 +1235,7 @@ class TelegramService
         $lines = $tasks->values()->map(fn($task, $index) => ($index + 1).". {$task->title}")->implode("\n");
         $text = "⏰ <b>Eslatma</b>\n\nBajarilmagan tasklaringiz:\n{$lines}";
 
-        $buttons = $tasks->map(fn($task) => [['text' => "✅ {$task->title}", 'callback_data' => "complete_task:{$task->id}"]])->all();
+        $buttons = $tasks->map(fn($task) => [['text' => "✅ {$task->title}", 'callback_data' => "confirm_task:{$task->id}"]])->all();
 
         $this->sendMessage($chatId, $text, $buttons, 'HTML');
     }
@@ -1189,11 +1247,15 @@ class TelegramService
         ]);
     }
 
-    public function editMessageText(int $chatId, int $messageId, string $text){
-        Http::post('https://api.telegram.org/bot'.config('services.telegram.bot_token').'/editMessageText', [
+    public function editMessageText(int $chatId, int $messageId, string $text, ?array $inlineKeyboard = null){
+        $payload = [
             'chat_id' => $chatId,
             'message_id' => $messageId,
             'text' => $text,
-        ]);
+        ];
+        if($inlineKeyboard !== null){
+            $payload['reply_markup'] = json_encode(['inline_keyboard' => $inlineKeyboard]);
+        }
+        Http::post('https://api.telegram.org/bot'.config('services.telegram.bot_token').'/editMessageText', $payload);
     }
 }
