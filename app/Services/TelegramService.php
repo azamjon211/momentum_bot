@@ -19,6 +19,7 @@ class TelegramService
     private const MENU_INVITE = '➕ Do\'st taklif qilish';
     private const MENU_CREATE_PLAN = '🗓 Reja yaratish';
     private const MENU_MANAGE_PLANS = '✏️ Rejalarni boshqarish';
+    private const MENU_STATISTICS = '📊 Statistikam';
     private const MENU_HELP = 'ℹ️ Yordam';
 
     private const WEEKDAY_BUTTONS = [
@@ -60,6 +61,7 @@ class TelegramService
         private DailyPlanService $dailyPlanService,
         private FriendshipService $friendshipService,
         private WeeklyPlanService $weeklyPlanService,
+        private StatisticsService $statisticsService,
     ) {}
 
     public function handleUpdate(array $update){
@@ -101,6 +103,10 @@ class TelegramService
         }
         if($text === self::MENU_MANAGE_PLANS){
             $this->handleManagePlans($telegramId, $chatId);
+            return;
+        }
+        if($command === '/stats' || $text === self::MENU_STATISTICS){
+            $this->handleStatistics($telegramId, $chatId);
             return;
         }
         if($command === '/help' || $text === self::MENU_HELP){
@@ -186,15 +192,54 @@ class TelegramService
         $this->sendMainMenu($chatId, "Mavjud bo'limlar:");
     }
 
+    private function handleStatistics(int $telegramId, int $chatId){
+        $user = User::where('telegram_id', $telegramId)->first();
+        if(!$user){
+            $this->sendMessage($chatId, "Avval /start bosing.");
+            return;
+        }
+
+        $stats = $this->statisticsService->buildFor($user);
+
+        if($stats['total_days'] === 0){
+            $this->sendMessage($chatId, "Hali statistika yo'q. \"".self::MENU_CREATE_PLAN."\" orqali reja yaratib, tasklarni bajarishni boshlang.");
+            return;
+        }
+
+        $fireCount = min($stats['streak'], 5);
+        $fireBar = $fireCount > 0 ? str_repeat('🔥', $fireCount) : '💤';
+        $streakLabel = $stats['streak'] > 5 ? "{$fireBar} ({$stats['streak']} kun)" : "{$fireBar} {$stats['streak']} kun";
+
+        $filledBlocks = (int) round($stats['completion_rate'] / 10);
+        $progressBar = str_repeat('🟩', $filledBlocks).str_repeat('⬜', 10 - $filledBlocks);
+
+        $heatmap = $stats['recent']->reverse()->map(function($day){
+            if($day['total'] === 0) return '⬜';
+            if($day['done'] === $day['total']) return '🟩';
+            if($day['done'] === 0) return '🟥';
+            return '🟨';
+        })->implode(' ');
+
+        $text = "📊 <b>Statistikangiz</b>\n\n"
+            ."{$streakLabel} — joriy streak\n\n"
+            ."Bajarish darajasi: <b>{$stats['completion_rate']}%</b>\n"
+            ."{$progressBar}\n\n"
+            ."<b>Oxirgi kunlar</b> (eskidan yangiga):\n{$heatmap}\n\n"
+            ."Jami kuzatilgan kunlar: {$stats['total_days']}";
+
+        $this->sendMessage($chatId, $text, null, 'HTML');
+    }
+
     private function sendMainMenu(int $chatId, string $text){
         $payload = [
             'chat_id' => $chatId,
             'text' => $text,
             'reply_markup' => json_encode([
                 'keyboard' => [
-                    [self::MENU_TODAY, self::MENU_CREATE_PLAN],
-                    [self::MENU_MANAGE_PLANS, self::MENU_FRIENDS],
-                    [self::MENU_INVITE, self::MENU_HELP],
+                    [self::MENU_TODAY, self::MENU_STATISTICS],
+                    [self::MENU_CREATE_PLAN, self::MENU_MANAGE_PLANS],
+                    [self::MENU_FRIENDS, self::MENU_INVITE],
+                    [self::MENU_HELP],
                 ],
                 'resize_keyboard' => true,
             ]),
