@@ -16,6 +16,7 @@ class TelegramService
 {
     private const MENU_TODAY = '📋 Bugungi tasklarim';
     private const MENU_FRIENDS = '👥 Do\'stlarim';
+    private const MENU_LEADERBOARD = '🏆 Do\'stlar reytingi';
     private const MENU_INVITE = '➕ Do\'st taklif qilish';
     private const MENU_CREATE_PLAN = '🗓 Reja yaratish';
     private const MENU_MANAGE_PLANS = '✏️ Rejalarni boshqarish';
@@ -97,6 +98,10 @@ class TelegramService
         }
         if($text === self::MENU_FRIENDS){
             $this->handleFriendsList($telegramId, $chatId);
+            return;
+        }
+        if($command === '/reyting' || $text === self::MENU_LEADERBOARD){
+            $this->handleLeaderboard($telegramId, $chatId);
             return;
         }
         if($command === '/reja' || $text === self::MENU_CREATE_PLAN){
@@ -195,6 +200,42 @@ class TelegramService
         $this->sendMessage($chatId, $text, null, 'HTML');
     }
 
+    private function handleLeaderboard(int $telegramId, int $chatId){
+        $user = User::where('telegram_id', $telegramId)->first();
+        if(!$user){
+            $this->sendMessage($chatId, "Avval /start bosing.");
+            return;
+        }
+
+        $friends = $this->friendshipService->acceptedFriendsOf($user);
+        $participants = $friends->push($user);
+
+        $ranked = $participants->map(function($person) use ($user){
+            $stats = $this->statisticsService->buildFor($person);
+            return [
+                'name' => $person->id === $user->id ? 'Siz' : $person->name,
+                'is_me' => $person->id === $user->id,
+                'streak' => $stats['streak'],
+                'total_done' => $stats['total_done'],
+            ];
+        })->sort(fn($a, $b) => ($b['streak'] <=> $a['streak']) ?: ($b['total_done'] <=> $a['total_done']))->values();
+
+        $medals = ['🥇', '🥈', '🥉'];
+        $lines = $ranked->map(function($p, $index) use ($medals){
+            $rank = $medals[$index] ?? ($index + 1).'.';
+            $name = $p['is_me'] ? "<b>{$p['name']}</b>" : $p['name'];
+            return "{$rank} {$name} — {$p['streak']} kun 🔥 ({$p['total_done']} ta bajarilgan)";
+        })->implode("\n");
+
+        $text = "🏆 <b>Do'stlar reytingi</b>\n\n{$lines}";
+
+        if($friends->isEmpty()){
+            $text .= "\n\nHali do'stlaringiz yo'q. \"".self::MENU_INVITE."\" tugmasini bosib taklif yuboring.";
+        }
+
+        $this->sendMessage($chatId, $text, null, 'HTML');
+    }
+
     private function handleHelp(int $chatId){
         $text = "ℹ️ <b>Yordam</b>\n\n"
             ."📋 Bugungi tasklarim — bugungi vazifalaringizni ko'rish va bajarish\n"
@@ -203,8 +244,9 @@ class TelegramService
             ."🗓 Reja yaratish — yangi haftalik reja qurish\n"
             ."✏️ Rejalarni boshqarish — mavjud rejalarni tahrirlash, faollashtirish, o'chirish\n"
             ."👥 Do'stlarim — qabul qilingan do'stlaringiz ro'yxati\n"
+            ."🏆 Do'stlar reytingi — siz va do'stlaringiz streak bo'yicha solishtirilgan ro'yxat\n"
             ."➕ Do'st taklif qilish — o'z taklif havolangizni olish\n\n"
-            ."<b>Buyruqlar:</b> /start /reja /bugun /stats /badges /invite /help";
+            ."<b>Buyruqlar:</b> /start /reja /bugun /stats /badges /reyting /invite /help";
 
         $this->sendMessage($chatId, $text, null, 'HTML');
         $this->sendMainMenu($chatId, "Quyidagi menyudan foydalaning:");
@@ -290,7 +332,8 @@ class TelegramService
                     [self::MENU_TODAY, self::MENU_STATISTICS],
                     [self::MENU_BADGES, self::MENU_CREATE_PLAN],
                     [self::MENU_MANAGE_PLANS, self::MENU_FRIENDS],
-                    [self::MENU_INVITE, self::MENU_HELP],
+                    [self::MENU_LEADERBOARD, self::MENU_INVITE],
+                    [self::MENU_HELP],
                 ],
                 'resize_keyboard' => true,
             ]),
