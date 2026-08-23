@@ -3,6 +3,7 @@
 use App\Http\Controllers\ApplicationController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\DailyPlanTaskController;
+use App\Http\Controllers\MiniAppController;
 use App\Http\Controllers\TelegramController;
 use App\Http\Controllers\TransactionController;
 use App\Http\Controllers\WeeklyPlanController;
@@ -38,4 +39,9 @@ Route::middleware('auth:sanctum')->group(function(){
 Route::post('/register', [AuthController::class, 'register']);
 Route::post('/login', [AuthController::class, 'login']);
 Route::get('/show/{transactionId}', [TransactionController::class, 'show']);
-Route::post('/telegram/webhook', [TelegramController::class, 'handle']);   // <- shu qo'shildi
+Route::post('/telegram/webhook', [TelegramController::class, 'handle']);
+
+Route::middleware('telegram.webapp')->prefix('telegram/miniapp')->group(function () {
+    Route::get('/tasks/today', [MiniAppController::class, 'todayTasks']);
+    Route::patch('/tasks/{task}/complete', [MiniAppController::class, 'completeTask']);
+});

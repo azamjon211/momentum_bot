@@ -37,6 +37,14 @@ class TelegramService
             $this->handleInvite($telegramId, $chatId);
             return;
         }
+        if($command === '/bugun'){
+            $this->handleToday($chatId);
+            return;
+        }
+        if($command === '/help'){
+            $this->handleHelp($chatId);
+            return;
+        }
     }
     public function handleStart(int $telegramId, int $chatId, string $firstName, ?string $inviteCode = null){
         $user = User::where('telegram_id', $telegramId) ->first();
@@ -57,6 +65,26 @@ class TelegramService
         if($inviteCode){
             $this->handleFriendInvite($user, $inviteCode);
         }
+
+        $this->handleHelp($chatId);
+    }
+
+    private function handleToday(int $chatId){
+        $this->sendMessage($chatId, "Bugungi tasklaringiz:", [
+            [['text' => '📋 Bugungi tasklarim', 'web_app' => ['url' => $this->miniAppUrl()]]],
+        ]);
+    }
+
+    private function handleHelp(int $chatId){
+        $this->sendMessage($chatId, "Mavjud buyruqlar:\n"
+            ."/bugun — bugungi tasklaringizni ko'rish va bajarish\n"
+            ."/invite — do'stlaringizni taklif qilish havolasi\n"
+            ."/help — shu ro'yxat");
+    }
+
+    private function miniAppUrl(): string
+    {
+        return rtrim(config('app.url'), '/') . '/miniapp/';
     }
 
     private function handleFriendInvite(User $user, string $inviteCode){
