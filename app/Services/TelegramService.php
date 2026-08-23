@@ -1,10 +1,12 @@
 <?php
 
 namespace App\Services;
+use App\Enums\TaskType;
 use App\Models\DailyPlan;
 use App\Models\DailyPlanTask;
 use App\Models\Friendship;
 use App\Models\User;
+use App\Models\WeeklyPlan;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
 class TelegramService
@@ -12,11 +14,23 @@ class TelegramService
     private const MENU_TODAY = '📋 Bugungi tasklarim';
     private const MENU_FRIENDS = '👥 Do\'stlarim';
     private const MENU_INVITE = '➕ Do\'st taklif qilish';
+    private const MENU_CREATE_PLAN = '🗓 Reja yaratish';
     private const MENU_HELP = 'ℹ️ Yordam';
+
+    private const WEEKDAYS = [
+        'dushanba' => 'monday',
+        'seshanba' => 'tuesday',
+        'chorshanba' => 'wednesday',
+        'payshanba' => 'thursday',
+        'juma' => 'friday',
+        'shanba' => 'saturday',
+        'yakshanba' => 'sunday',
+    ];
 
     public function __construct(
         private DailyPlanService $dailyPlanService,
         private FriendshipService $friendshipService,
+        private WeeklyPlanService $weeklyPlanService,
     ) {}
 
     public function handleUpdate(array $update){
@@ -51,9 +65,18 @@ class TelegramService
             $this->handleFriendsList($telegramId, $chatId);
             return;
         }
+        if($command === '/reja' || $text === self::MENU_CREATE_PLAN){
+            $this->handleCreatePlanStart($telegramId, $chatId);
+            return;
+        }
         if($command === '/help' || $text === self::MENU_HELP){
             $this->handleHelp($chatId);
             return;
+        }
+
+        $user = User::where('telegram_id', $telegramId)->first();
+        if($user && $user->bot_state){
+            $this->handlePlanCreationInput($user, $chatId, $text);
         }
     }
     public function handleStart(int $telegramId, int $chatId, string $firstName, ?string $inviteCode = null){
@@ -94,7 +117,7 @@ class TelegramService
         $tasks = $dailyPlan?->tasks ?? collect();
 
         if($tasks->isEmpty()){
-            $this->sendMessage($chatId, "Bugun uchun task yo'q.");
+            $this->sendMessage($chatId, "Bugun uchun task yo'q. Avval \"".self::MENU_CREATE_PLAN."\" orqali haftalik reja yarating.");
             return;
         }
 
@@ -134,13 +157,146 @@ class TelegramService
             'text' => $text,
             'reply_markup' => json_encode([
                 'keyboard' => [
-                    [self::MENU_TODAY, self::MENU_FRIENDS],
-                    [self::MENU_INVITE, self::MENU_HELP],
+                    [self::MENU_TODAY, self::MENU_CREATE_PLAN],
+                    [self::MENU_FRIENDS, self::MENU_INVITE],
+                    [self::MENU_HELP],
                 ],
                 'resize_keyboard' => true,
             ]),
         ];
         Http::post('https://api.telegram.org/bot'.config('services.telegram.bot_token').'/sendMessage', $payload);
+    }
+
+    private function handleCreatePlanStart(int $telegramId, int $chatId){
+        $user = User::where('telegram_id', $telegramId)->first();
+        if(!$user){
+            $this->sendMessage($chatId, "Avval /start bosing.");
+            return;
+        }
+
+        $user->update(['bot_state' => 'awaiting_plan_name', 'bot_state_data' => null]);
+        $this->sendMessage($chatId, "Yangi reja nomini kiriting (masalan: Asosiy reja):");
+    }
+
+    private function handlePlanCreationInput(User $user, int $chatId, string $text){
+        if($user->bot_state === 'awaiting_plan_name'){
+            $plan = $this->weeklyPlanService->create($user, $text);
+            $user->update([
+                'bot_state' => 'awaiting_task',
+                'bot_state_data' => ['weekly_plan_id' => $plan->id],
+            ]);
+
+            $kunlar = implode(', ', array_keys(self::WEEKDAYS));
+            $turlar = implode(', ', array_map(fn($c) => $c->value, TaskType::cases()));
+
+            $this->sendMessage($chatId, "\"{$plan->name}\" yaratildi. Endi tasklar qo'shing, har birini shu formatda yuboring:\n\n"
+                ."kun | nomi | turi | qiymat | birlik | eslatma_vaqti\n\n"
+                ."Masalan:\n"
+                ."dushanba | Sport | duration | 30 | daqiqa | 07:00\n"
+                ."seshanba | Kitob o'qish | count | 20 | sahifa |\n\n"
+                ."Kunlar: {$kunlar}\n"
+                ."Turlar: {$turlar}\n"
+                ."Qiymat, birlik, eslatma — ixtiyoriy, bo'sh qoldirishingiz mumkin.\n\n"
+                ."Tugatgach \"tugadi\" deb yozing, bekor qilish uchun \"bekor qilish\" deb yozing.");
+            return;
+        }
+
+        if($user->bot_state === 'awaiting_task'){
+            $normalized = mb_strtolower(trim($text));
+
+            if($normalized === 'bekor qilish'){
+                $planId = $user->bot_state_data['weekly_plan_id'] ?? null;
+                WeeklyPlan::where('id', $planId)->delete();
+                $user->update(['bot_state' => null, 'bot_state_data' => null]);
+                $this->sendMessage($chatId, "Reja yaratish bekor qilindi.");
+                return;
+            }
+
+            if($normalized === 'tugadi'){
+                $this->finalizePlanCreation($user, $chatId);
+                return;
+            }
+
+            $planId = $user->bot_state_data['weekly_plan_id'] ?? null;
+            $plan = WeeklyPlan::find($planId);
+
+            if(!$plan){
+                $user->update(['bot_state' => null, 'bot_state_data' => null]);
+                $this->sendMessage($chatId, "Xatolik yuz berdi, reja topilmadi. Qaytadan \"".self::MENU_CREATE_PLAN."\" bilan boshlang.");
+                return;
+            }
+
+            $parsed = $this->parseTaskLine($text);
+
+            if(is_string($parsed)){
+                $this->sendMessage($chatId, $parsed);
+                return;
+            }
+
+            $parsed['position'] = $plan->tasks()->count();
+            $this->weeklyPlanService->addTask($plan, $parsed);
+            $this->sendMessage($chatId, "✅ Qo'shildi: {$parsed['title']} ({$parsed['weekday']})");
+        }
+    }
+
+    private function finalizePlanCreation(User $user, int $chatId){
+        $planId = $user->bot_state_data['weekly_plan_id'] ?? null;
+        $plan = WeeklyPlan::find($planId);
+
+        if($plan && $plan->tasks()->count() > 0){
+            $this->weeklyPlanService->activate($plan);
+            $this->dailyPlanService->generateForDate($user, now($user->timezone));
+            $taskCount = $plan->tasks()->count();
+            $this->sendMessage($chatId, "✅ \"{$plan->name}\" rejasi faollashtirildi ({$taskCount} ta task). \"".self::MENU_TODAY."\" tugmasidan bugungi tasklaringizni ko'rishingiz mumkin.");
+        } else {
+            $plan?->delete();
+            $this->sendMessage($chatId, "Hech qanday task qo'shilmadi, reja bekor qilindi.");
+        }
+
+        $user->update(['bot_state' => null, 'bot_state_data' => null]);
+    }
+
+    private function parseTaskLine(string $line): array|string
+    {
+        $parts = array_map('trim', explode('|', $line));
+
+        if(count($parts) < 3){
+            return "Format noto'g'ri. Kamida: kun | nomi | turi ko'rsating.";
+        }
+
+        $kun = mb_strtolower($parts[0] ?? '');
+        $title = $parts[1] ?? '';
+        $type = $parts[2] ?? '';
+        $qiymat = $parts[3] ?? null;
+        $birlik = $parts[4] ?? null;
+        $eslatma = $parts[5] ?? null;
+
+        $weekday = self::WEEKDAYS[$kun] ?? null;
+        if(!$weekday){
+            return "Kun nomi noto'g'ri: \"{$kun}\". Quyidagilardan birini yozing: ".implode(', ', array_keys(self::WEEKDAYS));
+        }
+
+        if($title === ''){
+            return "Task nomini kiriting.";
+        }
+
+        $validTypes = array_map(fn($c) => $c->value, TaskType::cases());
+        if(!in_array($type, $validTypes)){
+            return "Turi noto'g'ri: \"{$type}\". Quyidagilardan birini yozing: ".implode(', ', $validTypes);
+        }
+
+        if($eslatma !== null && $eslatma !== '' && !preg_match('/^\d{1,2}:\d{2}$/', $eslatma)){
+            return "Eslatma vaqti H:i formatida bo'lishi kerak (masalan 07:00).";
+        }
+
+        return [
+            'weekday' => $weekday,
+            'title' => $title,
+            'type' => $type,
+            'target_value' => ($qiymat !== null && $qiymat !== '') ? (int) $qiymat : null,
+            'target_unit' => ($birlik !== null && $birlik !== '') ? $birlik : null,
+            'remind_at' => ($eslatma !== null && $eslatma !== '') ? $eslatma : null,
+        ];
     }
 
     private function handleFriendInvite(User $user, string $inviteCode){

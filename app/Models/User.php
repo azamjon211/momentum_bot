@@ -12,7 +12,7 @@ use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
 
-#[Fillable(['name', 'email', 'password', 'telegram_id', 'invite_code', 'timezone'])]
+#[Fillable(['name', 'email', 'password', 'telegram_id', 'invite_code', 'timezone', 'bot_state', 'bot_state_data'])]
 #[Hidden(['password', 'remember_token'])]
 class User extends Authenticatable
 {
@@ -28,6 +28,8 @@ class User extends Authenticatable
         'telegram_id',
         'invite_code',
         'timezone',
+        'bot_state',
+        'bot_state_data',
     ];
     protected $hidden = [
         'password',
@@ -44,6 +46,7 @@ class User extends Authenticatable
         return [
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
+            'bot_state_data' => 'array',
         ];
     }
     public function weeklyPlans(): HasMany{
