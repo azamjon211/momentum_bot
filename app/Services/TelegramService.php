@@ -27,6 +27,18 @@ class TelegramService
         'thursday' => 'Payshanba', 'friday' => 'Juma', 'saturday' => 'Shanba', 'sunday' => 'Yakshanba',
     ];
 
+    private const WEEKDAY_GROUPS = [
+        'everyday' => ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'],
+        'weekdays' => ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
+        'weekend' => ['saturday', 'sunday'],
+    ];
+
+    private const WEEKDAY_GROUP_LABELS = [
+        'everyday' => 'Har kuni',
+        'weekdays' => 'Ish kunlari (Dush-Juma)',
+        'weekend' => 'Dam olish kunlari (Shan-Yak)',
+    ];
+
     private const TYPE_LABELS = [
         'checkbox' => 'Oddiy (belgilash)', 'duration' => 'Vaqt (daqiqa/soat)', 'count' => 'Miqdor (sahifa/marta)',
     ];
@@ -273,37 +285,54 @@ class TelegramService
     }
 
     private function sendWeekdayPrompt(int $chatId){
-        $rows = collect(self::WEEKDAY_BUTTONS)
+        $groupRows = [
+            [['text' => '📅 Har kuni', 'callback_data' => 'task_weekday:everyday']],
+            [
+                ['text' => '💼 Ish kunlari', 'callback_data' => 'task_weekday:weekdays'],
+                ['text' => '🌴 Dam olish kunlari', 'callback_data' => 'task_weekday:weekend'],
+            ],
+        ];
+
+        $dayRows = collect(self::WEEKDAY_BUTTONS)
             ->map(fn($pair) => ['text' => $pair[1], 'callback_data' => "task_weekday:{$pair[0]}"])
             ->chunk(2)
             ->map(fn($chunk) => $chunk->values()->all())
             ->values()
             ->all();
 
-        $this->sendMessage($chatId, "Task uchun qaysi kun?", $rows);
+        $this->sendMessage($chatId, "Task uchun qaysi kun(lar)?", [...$groupRows, ...$dayRows]);
     }
 
     private function saveDraftTaskAndAskMore(User $user, int $chatId){
         $planId = $user->bot_state_data['weekly_plan_id'] ?? null;
         $plan = WeeklyPlan::find($planId);
         $draft = $user->bot_state_data['draft_task'] ?? [];
+        $weekdays = $draft['weekdays'] ?? [];
 
-        if(!$plan || empty($draft['weekday']) || empty($draft['title']) || empty($draft['type'])){
+        if(!$plan || empty($weekdays) || empty($draft['title']) || empty($draft['type'])){
             $user->update(['bot_state' => null, 'bot_state_data' => null]);
             $this->sendMessage($chatId, "Xatolik yuz berdi. Qaytadan \"".self::MENU_CREATE_PLAN."\" bilan boshlang.");
             return;
         }
 
-        $draft['position'] = $plan->tasks()->count();
-        $this->weeklyPlanService->addTask($plan, $draft);
+        foreach($weekdays as $weekday){
+            $taskData = $draft;
+            unset($taskData['weekdays']);
+            $taskData['weekday'] = $weekday;
+            $taskData['position'] = $plan->tasks()->count();
+            $this->weeklyPlanService->addTask($plan, $taskData);
+        }
 
-        $weekdayLabel = self::WEEKDAY_LABELS[$draft['weekday']] ?? $draft['weekday'];
+        $daysLabel = count($weekdays) > 1
+            ? implode(', ', array_map(fn($d) => self::WEEKDAY_LABELS[$d] ?? $d, $weekdays))
+            : (self::WEEKDAY_LABELS[$weekdays[0]] ?? $weekdays[0]);
+
         $user->update([
             'bot_state' => 'awaiting_more_tasks',
             'bot_state_data' => ['weekly_plan_id' => $planId],
         ]);
 
-        $this->sendMessage($chatId, "✅ Qo'shildi: {$draft['title']} ({$weekdayLabel})");
+        $this->sendMessage($chatId, "✅ Qo'shildi: {$draft['title']} ({$daysLabel})");
         $this->sendMessage($chatId, "Yana task qo'shasizmi?", [
             [['text' => '➕ Ha', 'callback_data' => 'plan_more:yes'], ['text' => '✅ Tugatish', 'callback_data' => 'plan_more:no']],
         ]);
@@ -484,16 +513,19 @@ class TelegramService
             return;
         }
 
-        $weekday = str_replace('task_weekday:', '', $data);
+        $value = str_replace('task_weekday:', '', $data);
+        $weekdays = self::WEEKDAY_GROUPS[$value] ?? [$value];
+        $label = self::WEEKDAY_GROUP_LABELS[$value] ?? (self::WEEKDAY_LABELS[$value] ?? $value);
+
         $draft = $user->bot_state_data['draft_task'] ?? [];
-        $draft['weekday'] = $weekday;
+        $draft['weekdays'] = $weekdays;
         $user->update([
             'bot_state' => 'awaiting_task_title',
             'bot_state_data' => array_merge($user->bot_state_data, ['draft_task' => $draft]),
         ]);
 
         $this->answerCallbackQuery($callbackId);
-        $this->editMessageText($chatId, $messageId, "Kun: ".(self::WEEKDAY_LABELS[$weekday] ?? $weekday)." ✅");
+        $this->editMessageText($chatId, $messageId, "Kun: {$label} ✅");
         $this->sendMessage($chatId, "Task nomini kiriting (masalan: Sport):");
     }
 
