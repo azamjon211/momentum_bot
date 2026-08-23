@@ -200,6 +200,25 @@ class TelegramService
         $this->sendMessage($chatId, $text, null, 'HTML');
     }
 
+    private function dayEmoji(array $day): string
+    {
+        if($day['total'] === 0) return '⬜';
+        if($day['done'] === $day['total']) return '🟩';
+        if($day['done'] === 0) return '🟥';
+        return '🟨';
+    }
+
+    private function heatmapGrid($recent, int $perRow = 7): string
+    {
+        $emojis = $recent->reverse()->map(fn($day) => $this->dayEmoji($day))->values();
+        return $emojis->chunk($perRow)->map(fn($row) => $row->implode(''))->implode("\n");
+    }
+
+    private function heatmapLine($recent, int $days = 7): string
+    {
+        return $recent->take($days)->reverse()->map(fn($day) => $this->dayEmoji($day))->implode('');
+    }
+
     private function handleLeaderboard(int $telegramId, int $chatId){
         $user = User::where('telegram_id', $telegramId)->first();
         if(!$user){
@@ -217,6 +236,7 @@ class TelegramService
                 'is_me' => $person->id === $user->id,
                 'streak' => $stats['streak'],
                 'total_done' => $stats['total_done'],
+                'heatmap' => $this->heatmapLine($stats['recent']),
             ];
         })->sort(fn($a, $b) => ($b['streak'] <=> $a['streak']) ?: ($b['total_done'] <=> $a['total_done']))->values();
 
@@ -224,10 +244,10 @@ class TelegramService
         $lines = $ranked->map(function($p, $index) use ($medals){
             $rank = $medals[$index] ?? ($index + 1).'.';
             $name = $p['is_me'] ? "<b>{$p['name']}</b>" : $p['name'];
-            return "{$rank} {$name} — {$p['streak']} kun 🔥 ({$p['total_done']} ta bajarilgan)";
-        })->implode("\n");
+            return "{$rank} {$name} — {$p['streak']} kun 🔥 ({$p['total_done']} ta bajarilgan)\n{$p['heatmap']}";
+        })->implode("\n\n");
 
-        $text = "🏆 <b>Do'stlar reytingi</b>\n\n{$lines}";
+        $text = "🏆 <b>Do'stlar reytingi</b>\n<i>(oxirgi 7 kun: eskidan yangiga)</i>\n\n{$lines}";
 
         if($friends->isEmpty()){
             $text .= "\n\nHali do'stlaringiz yo'q. \"".self::MENU_INVITE."\" tugmasini bosib taklif yuboring.";
@@ -273,14 +293,7 @@ class TelegramService
         $filledBlocks = (int) round($stats['completion_rate'] / 10);
         $progressBar = str_repeat('🟩', $filledBlocks).str_repeat('⬜', 10 - $filledBlocks);
 
-        $days = $stats['recent']->reverse()->map(function($day){
-            if($day['total'] === 0) return '⬜';
-            if($day['done'] === $day['total']) return '🟩';
-            if($day['done'] === 0) return '🟥';
-            return '🟨';
-        })->values();
-
-        $heatmap = $days->chunk(7)->map(fn($row) => $row->implode(''))->implode("\n");
+        $heatmap = $this->heatmapGrid($stats['recent']);
 
         $text = "📊 <b>Statistikangiz</b>\n\n"
             ."{$streakLabel} — joriy streak\n\n"
