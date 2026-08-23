@@ -87,13 +87,21 @@ class ChallengeService
             $logsByDate = $logs->keyBy(fn ($log) => $log->date->toDateString());
             $startDate = $challenge->starts_at->toDateString();
 
-            $recent = collect(range(6, 0))->map(function ($daysAgo) use ($logsByDate, $startDate) {
+            $today = now()->toDateString();
+
+            $recent = collect(range(6, 0))->map(function ($daysAgo) use ($logsByDate, $startDate, $today) {
                 $date = now()->subDays($daysAgo)->toDateString();
                 if ($date < $startDate) {
                     return ['status' => 'na'];
                 }
                 $log = $logsByDate->get($date);
-                return ['status' => ($log && $log->is_done) ? 'done' : 'missed'];
+                if ($log && $log->is_done) {
+                    return ['status' => 'done'];
+                }
+                if ($date === $today) {
+                    return ['status' => 'pending'];
+                }
+                return ['status' => 'missed'];
             })->values();
 
             return [

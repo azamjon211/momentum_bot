@@ -950,22 +950,38 @@ class TelegramService
         $this->sendMessage($chatId, "Sizning challenglaringiz:", $rows);
     }
 
+    private function challengeStatusEmoji(string $status): string
+    {
+        return match($status){
+            'done' => '🟩',
+            'pending' => '⏳',
+            'missed' => '🟥',
+            default => '⬜',
+        };
+    }
+
     private function showChallengeView(int $chatId, Challenge $challenge, User $user){
         $leaderboard = $this->challengeService->leaderboardFor($challenge);
         $isCheckbox = $challenge->type->value === TaskType::Checkbox->value;
         $medals = ['🥇', '🥈', '🥉'];
 
+        $todayLine = collect($leaderboard)->map(function($row){
+            $todayStatus = collect($row['recent'])->last()['status'] ?? 'na';
+            return $this->challengeStatusEmoji($todayStatus)." {$row['name']}";
+        })->implode(' · ');
+
         $lines = collect($leaderboard)->map(function($row, $index) use ($medals, $isCheckbox, $user){
             $rank = $medals[$index] ?? ($index + 1).'.';
             $name = $row['user_id'] === $user->id ? "<b>{$row['name']}</b>" : $row['name'];
             $metric = $isCheckbox ? "{$row['days_done']} kun bajarilgan" : "{$row['total_value']} jami";
-            $heatmap = collect($row['recent'])->map(fn($d) => match($d['status']){'done' => '🟩', 'missed' => '🟥', default => '⬜'})->implode('');
+            $heatmap = collect($row['recent'])->map(fn($d) => $this->challengeStatusEmoji($d['status']))->implode('');
             return "{$rank} {$name} — {$metric}\n{$heatmap}";
         })->implode("\n\n");
 
         $duration = $challenge->duration_days ? "{$challenge->duration_days} kun" : 'Cheksiz';
         $status = $challenge->is_active ? '🟢 Faol' : '🔴 Tugagan';
-        $text = "⚔️ <b>{$challenge->title}</b>\n{$status} · Muddat: {$duration}\n\n{$lines}";
+        $text = "⚔️ <b>{$challenge->title}</b>\n{$status} · Muddat: {$duration}\n\n"
+            ."<b>Bugun:</b> {$todayLine}\n\n{$lines}";
 
         $rows = [];
         if($challenge->is_active && !$this->challengeService->hasLoggedToday($challenge, $user)){
@@ -994,7 +1010,15 @@ class TelegramService
 
         $this->challengeService->logProgress($challenge, $user, (int) trim($text));
         $this->sendMessage($chatId, "✅ Bugungi natija qayd etildi: {$text} {$challenge->target_unit}");
+        $this->notifyChallengeParticipants($challenge, $user, "🔔 <b>{$user->name}</b> \"{$challenge->title}\"da bugungi natijasini kiritdi: {$text} {$challenge->target_unit}");
         $this->showChallengeView($chatId, $challenge, $user);
+    }
+
+    private function notifyChallengeParticipants(Challenge $challenge, User $except, string $message){
+        $challenge->participants()->with('user')
+            ->where('user_id', '!=', $except->id)
+            ->get()
+            ->each(fn($participant) => $this->sendMessage($participant->user->telegram_id, $message, null, 'HTML'));
     }
 
     private function handleCallbackQuery(array $callbackQuery){
@@ -1396,6 +1420,7 @@ class TelegramService
         if($challenge->type->value === TaskType::Checkbox->value){
             $this->challengeService->logProgress($challenge, $user);
             $this->sendMessage($chatId, "✅ Bugungi natija qayd etildi!");
+            $this->notifyChallengeParticipants($challenge, $user, "🔔 <b>{$user->name}</b> \"{$challenge->title}\"da bugungi vazifasini bajardi ✅");
             $this->showChallengeView($chatId, $challenge, $user);
             return;
         }
