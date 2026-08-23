@@ -11,10 +11,11 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;use Illuminate\Database\Elo
 class DailyPlan extends Model
 {
     protected $fillable = [
-        'user_id', 'weekly_plan_id', 'date'
+        'user_id', 'weekly_plan_id', 'date', 'summary_sent_at'
     ];
     protected $casts = [
-        'date'=> 'date'
+        'date'=> 'date',
+        'summary_sent_at' => 'datetime',
     ];
     public function user(): BelongsTo
     {

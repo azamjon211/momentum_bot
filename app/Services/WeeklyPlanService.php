@@ -25,4 +25,18 @@ class WeeklyPlanService {
     public function addTask(WeeklyPlan $plan, array $data){
         return $plan->tasks()->create($data);
     }
+
+    public function deactivateExpired(){
+        $expired = WeeklyPlan::where('is_active', true)
+            ->whereNotNull('ends_at')
+            ->whereDate('ends_at', '<=', now()->toDateString())
+            ->with('user')
+            ->get();
+
+        foreach($expired as $plan){
+            $plan->update(['is_active' => false]);
+        }
+
+        return $expired;
+    }
 }

@@ -9,10 +9,11 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 class WeeklyPlan extends Model
 {
     protected $fillable = [
-        'user_id', 'name', 'is_active'
+        'user_id', 'name', 'is_active', 'duration_days', 'ends_at'
     ];
     protected $casts = [
         'is_active' => 'boolean',
+        'ends_at' => 'date',
     ];
     public function user(){
         return $this->belongsTo(User::class);

@@ -7,5 +7,7 @@ use Illuminate\Support\Facades\Schedule;
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
+Schedule::command('app:check-plan-expirations')->dailyAt('00:05');
 Schedule::command('app:generate-daily-plans')->dailyAt('08:00');
 Schedule::command('app:send-task-reminders')->everyFifteenMinutes();
+Schedule::command('app:send-daily-summaries')->everyFifteenMinutes();
