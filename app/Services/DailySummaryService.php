@@ -31,12 +31,17 @@ class DailySummaryService
             $done = $plan->tasks->where('is_done', true)->count();
             $missed = $plan->tasks->where('is_done', false)->pluck('title');
 
-            $text = "🌙 Bugungi yakun: {$done}/{$total} task bajarildi.";
-            if ($missed->isNotEmpty()) {
-                $text .= "\n\nBajarilmagan tasklar:\n" . $missed->map(fn ($title) => "• {$title}")->implode("\n");
+            if ($missed->isEmpty()) {
+                $text = "🌙 <b>Ajoyib kun!</b>\n\nBugun barcha {$total} ta vazifangizga amal qildingiz. Intizom yo'lida davom etyapsiz 💪";
+            } else {
+                $missedList = $missed->map(fn ($title) => "• {$title}")->implode("\n");
+                $text = "🌙 <b>Bugungi yakun</b>\n\n"
+                    ."Bugun rejangizga to'liq amal qilmadingiz — {$done}/{$total} vazifa bajarildi.\n\n"
+                    ."Bajarilmadi:\n{$missedList}\n\n"
+                    ."Ertaga yaxshiroq bo'ladi, davom eting! 🔥";
             }
 
-            $this->telegramService->sendMessage($user->telegram_id, $text);
+            $this->telegramService->sendMessage($user->telegram_id, $text, null, 'HTML');
             $plan->update(['summary_sent_at' => now()]);
         }
     }
