@@ -236,6 +236,7 @@ class TelegramService
                 'is_me' => $person->id === $user->id,
                 'streak' => $stats['streak'],
                 'total_done' => $stats['total_done'],
+                'badge_count' => $this->badgeService->earnedCountFor($person),
                 'heatmap' => $this->heatmapLine($stats['recent']),
             ];
         })->sort(fn($a, $b) => ($b['streak'] <=> $a['streak']) ?: ($b['total_done'] <=> $a['total_done']))->values();
@@ -244,7 +245,7 @@ class TelegramService
         $lines = $ranked->map(function($p, $index) use ($medals){
             $rank = $medals[$index] ?? ($index + 1).'.';
             $name = $p['is_me'] ? "<b>{$p['name']}</b>" : $p['name'];
-            return "{$rank} {$name} — {$p['streak']} kun 🔥 ({$p['total_done']} ta bajarilgan)\n{$p['heatmap']}";
+            return "{$rank} {$name} — {$p['streak']} kun 🔥 · 🏅 x{$p['badge_count']}\n{$p['heatmap']}";
         })->implode("\n\n");
 
         $text = "🏆 <b>Do'stlar reytingi</b>\n<i>(oxirgi 7 kun: eskidan yangiga)</i>\n\n{$lines}";

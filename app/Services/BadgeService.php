@@ -72,4 +72,9 @@ class BadgeService
 
         return $all;
     }
+
+    public function earnedCountFor(User $user): int
+    {
+        return Badge::where('user_id', $user->id)->count();
+    }
 }
