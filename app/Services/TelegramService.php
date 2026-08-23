@@ -2,6 +2,8 @@
 
 namespace App\Services;
 use App\Enums\TaskType;
+use App\Models\Challenge;
+use App\Models\ChallengeParticipant;
 use App\Models\DailyPlan;
 use App\Models\DailyPlanTask;
 use App\Models\Friendship;
@@ -23,6 +25,7 @@ class TelegramService
     private const MENU_MANAGE_PLANS = '✏️ Rejalarni boshqarish';
     private const MENU_STATISTICS = '📊 Statistikam';
     private const MENU_BADGES = '🏅 Yutuqlarim';
+    private const MENU_CHALLENGES = '⚔️ Challenge';
     private const MENU_HELP = 'ℹ️ Yordam';
 
     private const WEEKDAY_BUTTONS = [
@@ -66,6 +69,7 @@ class TelegramService
         private WeeklyPlanService $weeklyPlanService,
         private StatisticsService $statisticsService,
         private BadgeService $badgeService,
+        private ChallengeService $challengeService,
     ) {}
 
     public function handleUpdate(array $update){
@@ -128,6 +132,10 @@ class TelegramService
             $this->handleLeaderboard($telegramId, $chatId);
             return;
         }
+        if($command === '/challenge' || $text === self::MENU_CHALLENGES){
+            $this->handleChallengeMenu($telegramId, $chatId);
+            return;
+        }
         if($command === '/reja' || $text === self::MENU_CREATE_PLAN){
             $this->handleCreatePlanStart($telegramId, $chatId);
             return;
@@ -172,7 +180,12 @@ class TelegramService
         }
 
         if($inviteCode){
-            $this->handleFriendInvite($user, $inviteCode);
+            $challenge = Challenge::where('invite_code', $inviteCode)->first();
+            if($challenge){
+                $this->handleChallengeInviteJoin($user, $challenge, $chatId);
+            } else {
+                $this->handleFriendInvite($user, $inviteCode);
+            }
         }
 
         $this->sendMainMenu($chatId, "Quyidagi menyudan foydalaning:");
@@ -290,8 +303,9 @@ class TelegramService
             ."✏️ Rejalarni boshqarish — mavjud rejalarni tahrirlash, faollashtirish, o'chirish\n"
             ."👥 Do'stlarim — qabul qilingan do'stlaringiz ro'yxati\n"
             ."🏆 Do'stlar reytingi — siz va do'stlaringiz streak bo'yicha solishtirilgan ro'yxat\n"
+            ."⚔️ Challenge — do'stlaringiz bilan umumiy maqsad qo'yib musobaqalashish\n"
             ."➕ Do'st taklif qilish — o'z taklif havolangizni olish\n\n"
-            ."<b>Buyruqlar:</b> /start /reja /bugun /stats /badges /reyting /invite /help";
+            ."<b>Buyruqlar:</b> /start /reja /bugun /stats /badges /reyting /challenge /invite /help";
 
         $this->sendMessage($chatId, $text, null, 'HTML');
         $this->sendMainMenu($chatId, "Quyidagi menyudan foydalaning:");
@@ -370,8 +384,8 @@ class TelegramService
                     [self::MENU_TODAY, self::MENU_STATISTICS],
                     [self::MENU_BADGES, self::MENU_CREATE_PLAN],
                     [self::MENU_MANAGE_PLANS, self::MENU_FRIENDS],
-                    [self::MENU_LEADERBOARD, self::MENU_INVITE],
-                    [self::MENU_HELP],
+                    [self::MENU_LEADERBOARD, self::MENU_CHALLENGES],
+                    [self::MENU_INVITE, self::MENU_HELP],
                 ],
                 'resize_keyboard' => true,
             ]),
@@ -397,6 +411,10 @@ class TelegramService
             'editing_task_title' => $this->stepEditTaskTitle($user, $chatId, $text),
             'editing_task_value' => $this->stepEditTaskValue($user, $chatId, $text),
             'editing_task_reminder' => $this->stepEditTaskReminder($user, $chatId, $text),
+            'awaiting_challenge_title' => $this->stepChallengeTitle($user, $chatId, $text),
+            'awaiting_challenge_value_unit' => $this->stepChallengeValueUnit($user, $chatId, $text),
+            'awaiting_challenge_reminder_time' => $this->stepChallengeReminderTime($user, $chatId, $text),
+            'logging_challenge_value' => $this->stepLogChallengeValue($user, $chatId, $text),
             default => null,
         };
     }
@@ -812,6 +830,173 @@ class TelegramService
         $this->sendMessage($chatId, "Do'stlaringizni taklif qilish uchun shu havolani yuboring:\n{$link}");
     }
 
+    // ---------- Challenges ----------
+
+    private function handleChallengeMenu(int $telegramId, int $chatId){
+        $user = User::where('telegram_id', $telegramId)->first();
+        if(!$user){
+            $this->sendMessage($chatId, "Avval /start bosing.");
+            return;
+        }
+
+        $this->sendMessage($chatId, "⚔️ <b>Challenge</b>\n\nDo'stlaringiz bilan birga kunlik maqsad qo'yib, kim ko'proq bajarganini solishtiring!", [
+            [['text' => '➕ Yangi challenge', 'callback_data' => 'chal_new']],
+            [['text' => '📋 Mening challenglarim', 'callback_data' => 'chal_list']],
+        ], 'HTML');
+    }
+
+    private function handleChallengeCreateStart(User $user, int $chatId){
+        $user->update(['bot_state' => 'awaiting_challenge_title', 'bot_state_data' => ['draft_challenge' => []]]);
+        $this->sendMessage($chatId, "Challenge nomini kiriting (masalan: 10000 qadam challenge):", [$this->cancelButtonRow()]);
+    }
+
+    private function stepChallengeTitle(User $user, int $chatId, string $text){
+        $draft = ['title' => $text];
+        $user->update(['bot_state' => 'awaiting_challenge_type', 'bot_state_data' => ['draft_challenge' => $draft]]);
+
+        $this->sendMessage($chatId, "Challenge turi qanday?", [
+            [['text' => self::TYPE_LABELS['checkbox'], 'callback_data' => 'chal_type:checkbox']],
+            [['text' => self::TYPE_LABELS['duration'], 'callback_data' => 'chal_type:duration']],
+            [['text' => self::TYPE_LABELS['count'], 'callback_data' => 'chal_type:count']],
+            $this->cancelButtonRow(),
+        ]);
+    }
+
+    private function stepChallengeValueUnit(User $user, int $chatId, string $text){
+        if(!preg_match('/^(\d+)\s+(.+)$/u', trim($text), $m)){
+            $this->sendMessage($chatId, "Format noto'g'ri. Masalan: 10000 qadam", [$this->cancelButtonRow()]);
+            return;
+        }
+
+        $draft = $user->bot_state_data['draft_challenge'] ?? [];
+        $draft['target_value'] = (int) $m[1];
+        $draft['target_unit'] = $m[2];
+        $user->update(['bot_state_data' => ['draft_challenge' => $draft]]);
+
+        $this->askChallengeDuration($user, $chatId);
+    }
+
+    private function askChallengeDuration(User $user, int $chatId){
+        $user->update(['bot_state' => 'awaiting_challenge_duration']);
+        $this->sendMessage($chatId, "Challenge qancha muddat davom etadi?", [
+            [['text' => '7 kun', 'callback_data' => 'chal_duration:7'], ['text' => '14 kun', 'callback_data' => 'chal_duration:14']],
+            [['text' => '30 kun', 'callback_data' => 'chal_duration:30'], ['text' => '♾ Cheksiz', 'callback_data' => 'chal_duration:none']],
+            $this->cancelButtonRow(),
+        ]);
+    }
+
+    private function askChallengeReminderChoice(User $user, int $chatId){
+        $user->update(['bot_state' => 'awaiting_challenge_reminder_choice']);
+        $this->sendMessage($chatId, "Har kuni eslatma yuborilsinmi?", [
+            [['text' => '⏰ Ha', 'callback_data' => 'chal_remind:yes'], ['text' => '⏭ Yo\'q', 'callback_data' => 'chal_remind:no']],
+            $this->cancelButtonRow(),
+        ]);
+    }
+
+    private function stepChallengeReminderTime(User $user, int $chatId, string $text){
+        if(!preg_match('/^\d{1,2}:\d{2}$/', trim($text))){
+            $this->sendMessage($chatId, "Vaqt H:i formatida bo'lishi kerak (masalan 07:00). Qaytadan yozing:", [$this->cancelButtonRow()]);
+            return;
+        }
+
+        $draft = $user->bot_state_data['draft_challenge'] ?? [];
+        $draft['remind_at'] = trim($text);
+        $user->update(['bot_state_data' => ['draft_challenge' => $draft]]);
+
+        $this->finalizeChallenge($user, $chatId);
+    }
+
+    private function finalizeChallenge(User $user, int $chatId){
+        $draft = $user->bot_state_data['draft_challenge'] ?? [];
+        $challenge = $this->challengeService->create($user, $draft);
+        $user->update(['bot_state' => null, 'bot_state_data' => null]);
+
+        $botUsername = config('services.telegram.bot_username');
+        $link = "https://t.me/{$botUsername}?start={$challenge->invite_code}";
+        $duration = $challenge->duration_days ? "{$challenge->duration_days} kun" : 'Cheksiz';
+
+        $text = "🎉 <b>\"{$challenge->title}\"</b> challenge yaratildi!\n\n"
+            ."Muddat: {$duration}\n\n"
+            ."Do'stlaringizni taklif qilish uchun shu havolani yuboring:\n{$link}";
+        $this->sendMessage($chatId, $text, null, 'HTML');
+    }
+
+    private function handleChallengeInviteJoin(User $user, Challenge $challenge, int $chatId){
+        if(!$challenge->is_active){
+            $this->sendMessage($chatId, "Bu challenge allaqachon tugagan.");
+            return;
+        }
+
+        $this->challengeService->join($challenge, $user);
+        $this->sendMessage($chatId, "✅ \"{$challenge->title}\" challengega qo'shildingiz! \"".self::MENU_CHALLENGES."\" bo'limidan kuzatib boring.");
+    }
+
+    private function handleChallengeList(int $telegramId, int $chatId){
+        $user = User::where('telegram_id', $telegramId)->first();
+        if(!$user){
+            $this->sendMessage($chatId, "Avval /start bosing.");
+            return;
+        }
+
+        $challengeIds = ChallengeParticipant::where('user_id', $user->id)->pluck('challenge_id');
+        $challenges = Challenge::whereIn('id', $challengeIds)->orderByDesc('is_active')->orderByDesc('id')->get();
+
+        if($challenges->isEmpty()){
+            $this->sendMessage($chatId, "Hali hech qanday challengeda ishtirok etmayapsiz. \"➕ Yangi challenge\" orqali birini yarating, yoki do'stingizdan taklif havolasini so'rang.");
+            return;
+        }
+
+        $rows = $challenges->map(fn($c) => [['text' => ($c->is_active ? '' : '🔒 ').$c->title, 'callback_data' => "chal_view:{$c->id}"]])->all();
+        $this->sendMessage($chatId, "Sizning challenglaringiz:", $rows);
+    }
+
+    private function showChallengeView(int $chatId, Challenge $challenge, User $user){
+        $leaderboard = $this->challengeService->leaderboardFor($challenge);
+        $isCheckbox = $challenge->type->value === TaskType::Checkbox->value;
+        $medals = ['🥇', '🥈', '🥉'];
+
+        $lines = collect($leaderboard)->map(function($row, $index) use ($medals, $isCheckbox, $user){
+            $rank = $medals[$index] ?? ($index + 1).'.';
+            $name = $row['user_id'] === $user->id ? "<b>{$row['name']}</b>" : $row['name'];
+            $metric = $isCheckbox ? "{$row['days_done']} kun bajarilgan" : "{$row['total_value']} jami";
+            $heatmap = collect($row['recent'])->map(fn($d) => match($d['status']){'done' => '🟩', 'missed' => '🟥', default => '⬜'})->implode('');
+            return "{$rank} {$name} — {$metric}\n{$heatmap}";
+        })->implode("\n\n");
+
+        $duration = $challenge->duration_days ? "{$challenge->duration_days} kun" : 'Cheksiz';
+        $status = $challenge->is_active ? '🟢 Faol' : '🔴 Tugagan';
+        $text = "⚔️ <b>{$challenge->title}</b>\n{$status} · Muddat: {$duration}\n\n{$lines}";
+
+        $rows = [];
+        if($challenge->is_active && !$this->challengeService->hasLoggedToday($challenge, $user)){
+            $rows[] = [['text' => '📝 Bugungi natijani kiritish', 'callback_data' => "chal_log:{$challenge->id}"]];
+        }
+        $rows[] = [['text' => '🔗 Taklif havolasi', 'callback_data' => "chal_invite:{$challenge->id}"]];
+        $rows[] = [['text' => '⬅️ Orqaga', 'callback_data' => 'chal_list']];
+
+        $this->sendMessage($chatId, $text, $rows, 'HTML');
+    }
+
+    private function stepLogChallengeValue(User $user, int $chatId, string $text){
+        if(!preg_match('/^\d+$/', trim($text))){
+            $this->sendMessage($chatId, "Raqam kiriting (masalan: 8500):", [$this->cancelButtonRow()]);
+            return;
+        }
+
+        $challengeId = $user->bot_state_data['challenge_id'] ?? null;
+        $challenge = Challenge::find($challengeId);
+        $user->update(['bot_state' => null, 'bot_state_data' => null]);
+
+        if(!$challenge){
+            $this->sendMessage($chatId, "Challenge topilmadi.");
+            return;
+        }
+
+        $this->challengeService->logProgress($challenge, $user, (int) trim($text));
+        $this->sendMessage($chatId, "✅ Bugungi natija qayd etildi: {$text} {$challenge->target_unit}");
+        $this->showChallengeView($chatId, $challenge, $user);
+    }
+
     private function handleCallbackQuery(array $callbackQuery){
         $callbackId = $callbackQuery['id'];
         $data = $callbackQuery['data'] ?? '';
@@ -876,6 +1061,51 @@ class TelegramService
             if($user){
                 $this->cancelWizard($user, $chatId);
             }
+            return;
+        }
+
+        if($data === 'chal_new'){
+            $user = User::where('telegram_id', $telegramId)->first();
+            $this->answerCallbackQuery($callbackId);
+            if($user){
+                $this->handleChallengeCreateStart($user, $chatId);
+            }
+            return;
+        }
+
+        if($data === 'chal_list'){
+            $this->answerCallbackQuery($callbackId);
+            $this->handleChallengeList($telegramId, $chatId);
+            return;
+        }
+
+        if(str_starts_with($data, 'chal_type:')){
+            $this->handleChallengeTypeCallback($callbackId, $chatId, $messageId, $telegramId, $data);
+            return;
+        }
+
+        if(str_starts_with($data, 'chal_duration:')){
+            $this->handleChallengeDurationCallback($callbackId, $chatId, $messageId, $telegramId, $data);
+            return;
+        }
+
+        if(str_starts_with($data, 'chal_remind:')){
+            $this->handleChallengeReminderChoiceCallback($callbackId, $chatId, $messageId, $telegramId, $data);
+            return;
+        }
+
+        if(str_starts_with($data, 'chal_view:')){
+            $this->handleChallengeViewCallback($callbackId, $chatId, $telegramId, $data);
+            return;
+        }
+
+        if(str_starts_with($data, 'chal_log:')){
+            $this->handleChallengeLogCallback($callbackId, $chatId, $telegramId, $data);
+            return;
+        }
+
+        if(str_starts_with($data, 'chal_invite:')){
+            $this->handleChallengeInviteLinkCallback($callbackId, $chatId, $telegramId, $data);
             return;
         }
 
@@ -1070,6 +1300,124 @@ class TelegramService
         $this->friendshipService->decline($friendship);
         $this->answerCallbackQuery($callbackId, "Rad etildi");
         $this->editMessageText($chatId, $messageId, "❌ So'rov rad etildi", []);
+    }
+
+    private function handleChallengeTypeCallback(string $callbackId, int $chatId, int $messageId, ?int $telegramId, string $data){
+        $user = User::where('telegram_id', $telegramId)->first();
+        if(!$user || $user->bot_state !== 'awaiting_challenge_type'){
+            $this->answerCallbackQuery($callbackId);
+            return;
+        }
+
+        $type = str_replace('chal_type:', '', $data);
+        $draft = $user->bot_state_data['draft_challenge'] ?? [];
+        $draft['type'] = $type;
+        $user->update(['bot_state_data' => ['draft_challenge' => $draft]]);
+
+        $this->answerCallbackQuery($callbackId);
+        $this->editMessageText($chatId, $messageId, "Turi: ".(self::TYPE_LABELS[$type] ?? $type)." ✅");
+
+        if($type === TaskType::Checkbox->value){
+            $this->askChallengeDuration($user->fresh(), $chatId);
+        } else {
+            $user->update(['bot_state' => 'awaiting_challenge_value_unit']);
+            $unitExample = $type === TaskType::Duration->value ? '30 daqiqa' : '10000 qadam';
+            $this->sendMessage($chatId, "Kunlik maqsad qiymatini yozing (masalan: {$unitExample}):", [$this->cancelButtonRow()]);
+        }
+    }
+
+    private function handleChallengeDurationCallback(string $callbackId, int $chatId, int $messageId, ?int $telegramId, string $data){
+        $user = User::where('telegram_id', $telegramId)->first();
+        if(!$user || $user->bot_state !== 'awaiting_challenge_duration'){
+            $this->answerCallbackQuery($callbackId);
+            return;
+        }
+
+        $value = str_replace('chal_duration:', '', $data);
+        $draft = $user->bot_state_data['draft_challenge'] ?? [];
+        $draft['duration_days'] = $value === 'none' ? null : (int) $value;
+        $user->update(['bot_state_data' => ['draft_challenge' => $draft]]);
+
+        $label = $value === 'none' ? 'Cheksiz' : "{$value} kun";
+        $this->answerCallbackQuery($callbackId);
+        $this->editMessageText($chatId, $messageId, "Muddat: {$label} ✅");
+
+        $this->askChallengeReminderChoice($user->fresh(), $chatId);
+    }
+
+    private function handleChallengeReminderChoiceCallback(string $callbackId, int $chatId, int $messageId, ?int $telegramId, string $data){
+        $user = User::where('telegram_id', $telegramId)->first();
+        if(!$user || $user->bot_state !== 'awaiting_challenge_reminder_choice'){
+            $this->answerCallbackQuery($callbackId);
+            return;
+        }
+
+        $choice = str_replace('chal_remind:', '', $data);
+        $this->answerCallbackQuery($callbackId);
+
+        if($choice === 'no'){
+            $this->editMessageText($chatId, $messageId, "Eslatma: yo'q");
+            $this->finalizeChallenge($user, $chatId);
+            return;
+        }
+
+        $this->editMessageText($chatId, $messageId, "Eslatma: vaqt kiriting ⌛");
+        $user->update(['bot_state' => 'awaiting_challenge_reminder_time']);
+        $this->sendMessage($chatId, "Eslatma vaqtini kiriting (masalan 07:00):", [$this->cancelButtonRow()]);
+    }
+
+    private function handleChallengeViewCallback(string $callbackId, int $chatId, ?int $telegramId, string $data){
+        $user = User::where('telegram_id', $telegramId)->first();
+        $challengeId = (int) str_replace('chal_view:', '', $data);
+        $challenge = Challenge::find($challengeId);
+
+        $this->answerCallbackQuery($callbackId);
+
+        if(!$challenge || !$user || !$this->challengeService->isParticipant($challenge, $user)){
+            $this->sendMessage($chatId, "Challenge topilmadi.");
+            return;
+        }
+
+        $this->showChallengeView($chatId, $challenge, $user);
+    }
+
+    private function handleChallengeLogCallback(string $callbackId, int $chatId, ?int $telegramId, string $data){
+        $user = User::where('telegram_id', $telegramId)->first();
+        $challengeId = (int) str_replace('chal_log:', '', $data);
+        $challenge = Challenge::find($challengeId);
+
+        $this->answerCallbackQuery($callbackId);
+
+        if(!$challenge || !$user || !$this->challengeService->isParticipant($challenge, $user)){
+            $this->sendMessage($chatId, "Challenge topilmadi.");
+            return;
+        }
+
+        if($challenge->type->value === TaskType::Checkbox->value){
+            $this->challengeService->logProgress($challenge, $user);
+            $this->sendMessage($chatId, "✅ Bugungi natija qayd etildi!");
+            $this->showChallengeView($chatId, $challenge, $user);
+            return;
+        }
+
+        $user->update(['bot_state' => 'logging_challenge_value', 'bot_state_data' => ['challenge_id' => $challenge->id]]);
+        $this->sendMessage($chatId, "Bugungi natijangizni raqam bilan kiriting (masalan: 8500):", [$this->cancelButtonRow()]);
+    }
+
+    private function handleChallengeInviteLinkCallback(string $callbackId, int $chatId, ?int $telegramId, string $data){
+        $challengeId = (int) str_replace('chal_invite:', '', $data);
+        $challenge = Challenge::find($challengeId);
+
+        $this->answerCallbackQuery($callbackId);
+
+        if(!$challenge){
+            $this->sendMessage($chatId, "Challenge topilmadi.");
+            return;
+        }
+
+        $botUsername = config('services.telegram.bot_username');
+        $link = "https://t.me/{$botUsername}?start={$challenge->invite_code}";
+        $this->sendMessage($chatId, "Do'stlaringizni taklif qilish uchun shu havolani yuboring:\n{$link}");
     }
 
     private function handlePlanDurationCallback(string $callbackId, int $chatId, int $messageId, ?int $telegramId, string $data){
@@ -1450,6 +1798,15 @@ class TelegramService
         $buttons = $tasks->map(fn($task) => [['text' => "✅ {$task->title}", 'callback_data' => "confirm_task:{$task->id}"]])->all();
 
         $this->sendMessage($chatId, $text, $buttons, 'HTML');
+    }
+
+    public function sendChallengeReminder(Challenge $challenge, User $user){
+        $this->sendMessage(
+            $user->telegram_id,
+            "⚔️ <b>{$challenge->title}</b>\n\nBugungi natijangizni hali kiritmadingiz!",
+            [[['text' => '📝 Natijani kiritish', 'callback_data' => "chal_log:{$challenge->id}"]]],
+            'HTML'
+        );
     }
 
     public function answerCallbackQuery(string $callbackQueryId, string $text = ''){
