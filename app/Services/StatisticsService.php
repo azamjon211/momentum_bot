@@ -38,7 +38,7 @@ class StatisticsService
             $streak++;
         }
 
-        $recent = $dailyPlans->take(7)->map(fn ($dp) => [
+        $recent = $dailyPlans->take(28)->map(fn ($dp) => [
             'date' => $dp->date->toDateString(),
             'done' => $dp->tasks->where('is_done', true)->count(),
             'total' => $dp->tasks->count(),
@@ -46,6 +46,7 @@ class StatisticsService
 
         return [
             'total_days' => $totalDays,
+            'total_done' => $totalDone,
             'completion_rate' => $completionRate,
             'streak' => $streak,
             'recent' => $recent,

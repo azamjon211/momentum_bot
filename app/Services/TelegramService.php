@@ -20,6 +20,7 @@ class TelegramService
     private const MENU_CREATE_PLAN = '🗓 Reja yaratish';
     private const MENU_MANAGE_PLANS = '✏️ Rejalarni boshqarish';
     private const MENU_STATISTICS = '📊 Statistikam';
+    private const MENU_BADGES = '🏅 Yutuqlarim';
     private const MENU_HELP = 'ℹ️ Yordam';
 
     private const WEEKDAY_BUTTONS = [
@@ -62,6 +63,7 @@ class TelegramService
         private FriendshipService $friendshipService,
         private WeeklyPlanService $weeklyPlanService,
         private StatisticsService $statisticsService,
+        private BadgeService $badgeService,
     ) {}
 
     public function handleUpdate(array $update){
@@ -107,6 +109,10 @@ class TelegramService
         }
         if($command === '/stats' || $text === self::MENU_STATISTICS){
             $this->handleStatistics($telegramId, $chatId);
+            return;
+        }
+        if($command === '/badges' || $text === self::MENU_BADGES){
+            $this->handleBadges($telegramId, $chatId);
             return;
         }
         if($command === '/help' || $text === self::MENU_HELP){
@@ -213,19 +219,39 @@ class TelegramService
         $filledBlocks = (int) round($stats['completion_rate'] / 10);
         $progressBar = str_repeat('🟩', $filledBlocks).str_repeat('⬜', 10 - $filledBlocks);
 
-        $heatmap = $stats['recent']->reverse()->map(function($day){
+        $days = $stats['recent']->reverse()->map(function($day){
             if($day['total'] === 0) return '⬜';
             if($day['done'] === $day['total']) return '🟩';
             if($day['done'] === 0) return '🟥';
             return '🟨';
-        })->implode(' ');
+        })->values();
+
+        $heatmap = $days->chunk(7)->map(fn($row) => $row->implode(''))->implode("\n");
 
         $text = "📊 <b>Statistikangiz</b>\n\n"
             ."{$streakLabel} — joriy streak\n\n"
             ."Bajarish darajasi: <b>{$stats['completion_rate']}%</b>\n"
             ."{$progressBar}\n\n"
             ."<b>Oxirgi kunlar</b> (eskidan yangiga):\n{$heatmap}\n\n"
-            ."Jami kuzatilgan kunlar: {$stats['total_days']}";
+            ."✅ Jami bajarilgan vazifalar: {$stats['total_done']}\n"
+            ."📅 Jami kuzatilgan kunlar: {$stats['total_days']}";
+
+        $this->sendMessage($chatId, $text, null, 'HTML');
+    }
+
+    private function handleBadges(int $telegramId, int $chatId){
+        $user = User::where('telegram_id', $telegramId)->first();
+        if(!$user){
+            $this->sendMessage($chatId, "Avval /start bosing.");
+            return;
+        }
+
+        $badges = $this->badgeService->allBadgesFor($user);
+        $earnedCount = count(array_filter($badges, fn($b) => $b['earned']));
+
+        $lines = collect($badges)->map(fn($b) => ($b['earned'] ? "✅ {$b['label']}" : "🔒 {$b['label']}"))->implode("\n");
+
+        $text = "🏅 <b>Yutuqlaringiz</b> ({$earnedCount}/".count($badges).")\n\n{$lines}";
 
         $this->sendMessage($chatId, $text, null, 'HTML');
     }
@@ -237,9 +263,9 @@ class TelegramService
             'reply_markup' => json_encode([
                 'keyboard' => [
                     [self::MENU_TODAY, self::MENU_STATISTICS],
-                    [self::MENU_CREATE_PLAN, self::MENU_MANAGE_PLANS],
-                    [self::MENU_FRIENDS, self::MENU_INVITE],
-                    [self::MENU_HELP],
+                    [self::MENU_BADGES, self::MENU_CREATE_PLAN],
+                    [self::MENU_MANAGE_PLANS, self::MENU_FRIENDS],
+                    [self::MENU_INVITE, self::MENU_HELP],
                 ],
                 'resize_keyboard' => true,
             ]),
@@ -850,7 +876,25 @@ class TelegramService
             if(!$allDone){
                 $this->sendRemainingTasksNote($task->dailyPlan);
             }
+            $this->announceNewBadges($task->dailyPlan);
         }
+    }
+
+    private function announceNewBadges(DailyPlan $dailyPlan){
+        $dailyPlan->loadMissing('user');
+        $newBadges = $this->badgeService->checkAndAward($dailyPlan->user);
+
+        if(empty($newBadges)){
+            return;
+        }
+
+        $list = collect($newBadges)->map(fn($label) => "🏅 {$label}")->implode("\n");
+        $this->sendMessage(
+            $dailyPlan->user->telegram_id,
+            "🎉 <b>Yangi yutuq qo'lga kiritildi!</b>\n\n{$list}",
+            null,
+            'HTML'
+        );
     }
 
     private function celebrateIfAllDone(DailyPlan $dailyPlan): bool
