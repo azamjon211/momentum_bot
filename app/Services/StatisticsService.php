@@ -44,12 +44,32 @@ class StatisticsService
             'total' => $dp->tasks->count(),
         ])->values();
 
+        $durationTotals = [];
+        $countTotals = [];
+
+        foreach ($dailyPlans as $dailyPlan) {
+            foreach ($dailyPlan->tasks as $task) {
+                if (!$task->is_done || !$task->target_value) {
+                    continue;
+                }
+
+                $unit = $task->target_unit ?: '';
+                if ($task->type->value === 'duration') {
+                    $durationTotals[$unit] = ($durationTotals[$unit] ?? 0) + $task->target_value;
+                } elseif ($task->type->value === 'count') {
+                    $countTotals[$unit] = ($countTotals[$unit] ?? 0) + $task->target_value;
+                }
+            }
+        }
+
         return [
             'total_days' => $totalDays,
             'total_done' => $totalDone,
             'completion_rate' => $completionRate,
             'streak' => $streak,
             'recent' => $recent,
+            'duration_totals' => $durationTotals,
+            'count_totals' => $countTotals,
         ];
     }
 }

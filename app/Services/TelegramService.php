@@ -186,16 +186,28 @@ class TelegramService
         $friends = $this->friendshipService->acceptedFriendsOf($user);
 
         if($friends->isEmpty()){
-            $this->sendMessage($chatId, "Hali do'stlaringiz yo'q. \"".self::MENU_INVITE."\" tugmasini bosib taklif yuboring.");
+            $this->sendMessage($chatId, "👥 <b>Do'stlaringiz</b>\n\nHali do'stlaringiz yo'q. \"".self::MENU_INVITE."\" tugmasini bosib taklif yuboring.", null, 'HTML');
             return;
         }
 
-        $list = $friends->map(fn($friend) => "• {$friend->name}")->implode("\n");
-        $this->sendMessage($chatId, "Sizning do'stlaringiz:\n{$list}");
+        $list = $friends->map(fn($friend) => "🔹 {$friend->name}")->implode("\n");
+        $text = "👥 <b>Do'stlaringiz</b> ({$friends->count()} ta)\n\n{$list}";
+        $this->sendMessage($chatId, $text, null, 'HTML');
     }
 
     private function handleHelp(int $chatId){
-        $this->sendMainMenu($chatId, "Mavjud bo'limlar:");
+        $text = "ℹ️ <b>Yordam</b>\n\n"
+            ."📋 Bugungi tasklarim — bugungi vazifalaringizni ko'rish va bajarish\n"
+            ."📊 Statistikam — streak, bajarish darajasi va tarixingiz\n"
+            ."🏅 Yutuqlarim — qo'lga kiritgan va hali qolgan medallaringiz\n"
+            ."🗓 Reja yaratish — yangi haftalik reja qurish\n"
+            ."✏️ Rejalarni boshqarish — mavjud rejalarni tahrirlash, faollashtirish, o'chirish\n"
+            ."👥 Do'stlarim — qabul qilingan do'stlaringiz ro'yxati\n"
+            ."➕ Do'st taklif qilish — o'z taklif havolangizni olish\n\n"
+            ."<b>Buyruqlar:</b> /start /reja /bugun /stats /badges /invite /help";
+
+        $this->sendMessage($chatId, $text, null, 'HTML');
+        $this->sendMainMenu($chatId, "Quyidagi menyudan foydalaning:");
     }
 
     private function handleStatistics(int $telegramId, int $chatId){
@@ -235,6 +247,19 @@ class TelegramService
             ."<b>Oxirgi kunlar</b> (eskidan yangiga):\n{$heatmap}\n\n"
             ."✅ Jami bajarilgan vazifalar: {$stats['total_done']}\n"
             ."📅 Jami kuzatilgan kunlar: {$stats['total_days']}";
+
+        $timeTotals = collect($stats['duration_totals'])->map(fn($value, $unit) => "⏱ {$value} {$unit}")->implode(', ');
+        $countTotalsText = collect($stats['count_totals'])->map(fn($value, $unit) => "🔢 {$value} {$unit}")->implode(', ');
+
+        if($timeTotals !== '' || $countTotalsText !== ''){
+            $text .= "\n\n<b>Jami natijalar:</b>";
+            if($timeTotals !== ''){
+                $text .= "\n{$timeTotals}";
+            }
+            if($countTotalsText !== ''){
+                $text .= "\n{$countTotalsText}";
+            }
+        }
 
         $this->sendMessage($chatId, $text, null, 'HTML');
     }
