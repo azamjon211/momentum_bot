@@ -47,6 +47,15 @@ class TelegramService
         'checkbox' => 'Oddiy (belgilash)', 'duration' => 'Vaqt (daqiqa/soat)', 'count' => 'Miqdor (sahifa/marta)',
     ];
 
+    private const COMPLETION_MESSAGES = [
+        "🔥 Zo'r! \"{title}\" bajarildi!",
+        "💪 Ajoyib ish! \"{title}\" tugadi.",
+        "⭐ Yana bir g'alaba! \"{title}\" bajarildi.",
+        "🚀 Davom eting! \"{title}\" bajarildi.",
+        "🏆 Zo'rsiz! \"{title}\" — bajarildi.",
+        "✨ Yaxshi natija! \"{title}\" tugadi.",
+    ];
+
     public function __construct(
         private DailyPlanService $dailyPlanService,
         private FriendshipService $friendshipService,
@@ -430,6 +439,7 @@ class TelegramService
             ['text' => '➕ Task qo\'shish', 'callback_data' => "atp:{$plan->id}"],
             ['text' => '🗑 Rejani o\'chirish', 'callback_data' => "dp:{$plan->id}"],
         ];
+        $backRow = [['text' => '⬅️ Rejalar ro\'yxati', 'callback_data' => 'back_to_plans']];
 
         $duration = $plan->duration_days ? "{$plan->duration_days} kun (tugaydi: {$plan->ends_at?->toDateString()})" : 'cheksiz';
         $text = "\"{$plan->name}\"".($plan->is_active ? ' (faol ✅)' : '')."\nMuddat: {$duration}";
@@ -438,7 +448,7 @@ class TelegramService
             $text .= "\n\nHali task yo'q.";
         }
 
-        $this->sendMessage($chatId, $text, [...$rows, $actionRow1, $actionRow2]);
+        $this->sendMessage($chatId, $text, [...$rows, $actionRow1, $actionRow2, $backRow]);
     }
 
     private function taskGroupsFor(WeeklyPlan $plan)
@@ -659,6 +669,12 @@ class TelegramService
             return;
         }
 
+        if($data === 'back_to_plans'){
+            $this->answerCallbackQuery($callbackId);
+            $this->handleManagePlans($telegramId, $chatId);
+            return;
+        }
+
         if(str_starts_with($data, 'mp:')){
             $this->handleSelectPlanCallback($callbackId, $chatId, $telegramId, $data);
             return;
@@ -736,12 +752,32 @@ class TelegramService
             return;
         }
 
-        if(!$task->is_done){
+        $wasAlreadyDone = $task->is_done;
+        if(!$wasAlreadyDone){
             $this->dailyPlanService->complete($task);
         }
 
-        $this->answerCallbackQuery($callbackId, "Bajarildi deb belgilandi ✅");
-        $this->editMessageText($chatId, $messageId, "✅ {$task->title} — bajarildi");
+        $message = str_replace('{title}', $task->title, self::COMPLETION_MESSAGES[array_rand(self::COMPLETION_MESSAGES)]);
+        $this->answerCallbackQuery($callbackId, $wasAlreadyDone ? "Allaqachon bajarilgan ✅" : "Bajarildi! ✅");
+        $this->editMessageText($chatId, $messageId, $message);
+
+        if(!$wasAlreadyDone){
+            $this->celebrateIfAllDone($task->dailyPlan);
+        }
+    }
+
+    private function celebrateIfAllDone(DailyPlan $dailyPlan){
+        $dailyPlan->loadMissing(['tasks', 'user']);
+        $tasks = $dailyPlan->tasks;
+
+        if($tasks->isNotEmpty() && $tasks->where('is_done', false)->isEmpty()){
+            $this->sendMessage(
+                $dailyPlan->user->telegram_id,
+                "🎉 <b>Tabriklaymiz!</b>\n\nBugungi barcha vazifalaringizni bajardingiz! Ertaga ham shu ruhda davom eting 💪",
+                null,
+                'HTML'
+            );
+        }
     }
 
     private function handleFriendResponseCallback(string $callbackId, int $chatId, int $messageId, string $data){
