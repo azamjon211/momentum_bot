@@ -300,6 +300,11 @@ class TelegramService
         return $user->bot_state_data['mode'] ?? 'create';
     }
 
+    private function cancelButtonRow(): array
+    {
+        return [['text' => '❌ Bekor qilish', 'callback_data' => 'cancel_wizard']];
+    }
+
     private function cancelWizard(User $user, int $chatId){
         $data = $user->bot_state_data ?? [];
         $mode = $data['mode'] ?? null;
@@ -324,7 +329,7 @@ class TelegramService
         }
 
         $user->update(['bot_state' => 'awaiting_plan_name', 'bot_state_data' => null]);
-        $this->sendMessage($chatId, "Yangi reja nomini kiriting (masalan: Sport rejasi):");
+        $this->sendMessage($chatId, "Yangi reja nomini kiriting (masalan: Sport rejasi):", [$this->cancelButtonRow()]);
     }
 
     private function stepPlanName(User $user, int $chatId, string $text){
@@ -338,6 +343,7 @@ class TelegramService
             [['text' => '7 kun', 'callback_data' => 'plan_duration:7'], ['text' => '14 kun', 'callback_data' => 'plan_duration:14']],
             [['text' => '30 kun', 'callback_data' => 'plan_duration:30'], ['text' => '90 kun', 'callback_data' => 'plan_duration:90']],
             [['text' => '♾ Cheksiz (doimiy)', 'callback_data' => 'plan_duration:none']],
+            $this->cancelButtonRow(),
         ]);
     }
 
@@ -352,12 +358,13 @@ class TelegramService
             [['text' => self::TYPE_LABELS['checkbox'], 'callback_data' => 'task_type:checkbox']],
             [['text' => self::TYPE_LABELS['duration'], 'callback_data' => 'task_type:duration']],
             [['text' => self::TYPE_LABELS['count'], 'callback_data' => 'task_type:count']],
+            $this->cancelButtonRow(),
         ]);
     }
 
     private function stepTaskValueUnit(User $user, int $chatId, string $text){
         if(!preg_match('/^(\d+)\s+(.+)$/u', trim($text), $m)){
-            $this->sendMessage($chatId, "Format noto'g'ri. Shu ko'rinishda yozing: 30 daqiqa");
+            $this->sendMessage($chatId, "Format noto'g'ri. Shu ko'rinishda yozing: 30 daqiqa", [$this->cancelButtonRow()]);
             return;
         }
 
@@ -372,7 +379,7 @@ class TelegramService
     private function stepTaskReminderTime(User $user, int $chatId, string $text){
         $text = trim($text);
         if(!preg_match('/^\d{1,2}:\d{2}$/', $text)){
-            $this->sendMessage($chatId, "Vaqt H:i formatida bo'lishi kerak (masalan 07:00). Qaytadan yozing:");
+            $this->sendMessage($chatId, "Vaqt H:i formatida bo'lishi kerak (masalan 07:00). Qaytadan yozing:", [$this->cancelButtonRow()]);
             return;
         }
 
@@ -387,6 +394,7 @@ class TelegramService
         $user->update(['bot_state' => 'awaiting_task_reminder_choice']);
         $this->sendMessage($chatId, "Eslatma qo'yasizmi?", [
             [['text' => '⏰ Ha', 'callback_data' => 'task_reminder:yes'], ['text' => '⏭ Yo\'q', 'callback_data' => 'task_reminder:no']],
+            $this->cancelButtonRow(),
         ]);
     }
 
@@ -406,7 +414,7 @@ class TelegramService
             ->values()
             ->all();
 
-        $this->sendMessage($chatId, "Task uchun qaysi kun(lar)?", [...$groupRows, ...$dayRows]);
+        $this->sendMessage($chatId, "Task uchun qaysi kun(lar)?", [...$groupRows, ...$dayRows, $this->cancelButtonRow()]);
     }
 
     private function saveDraftTaskAndAskMore(User $user, int $chatId){
@@ -618,7 +626,7 @@ class TelegramService
         $groupKey = $user->bot_state_data['group_key'] ?? null;
 
         if(!preg_match('/^(\d+)\s+(.+)$/u', trim($text), $m)){
-            $this->sendMessage($chatId, "Format noto'g'ri. Shu ko'rinishda yozing: 30 daqiqa");
+            $this->sendMessage($chatId, "Format noto'g'ri. Shu ko'rinishda yozing: 30 daqiqa", [$this->cancelButtonRow()]);
             return;
         }
 
@@ -640,7 +648,7 @@ class TelegramService
         $clear = in_array($normalized, ["yo'q", 'yoq', 'yoq.', "yo'q."]);
 
         if(!$clear && !preg_match('/^\d{1,2}:\d{2}$/', trim($text))){
-            $this->sendMessage($chatId, "Vaqt H:i formatida bo'lishi kerak (masalan 07:00), yoki eslatmani olib tashlash uchun \"yo'q\" deb yozing:");
+            $this->sendMessage($chatId, "Vaqt H:i formatida bo'lishi kerak (masalan 07:00), yoki eslatmani olib tashlash uchun \"yo'q\" deb yozing:", [$this->cancelButtonRow()]);
             return;
         }
 
@@ -753,6 +761,15 @@ class TelegramService
         if($data === 'back_to_plans'){
             $this->answerCallbackQuery($callbackId);
             $this->handleManagePlans($telegramId, $chatId);
+            return;
+        }
+
+        if($data === 'cancel_wizard'){
+            $user = User::where('telegram_id', $telegramId)->first();
+            $this->answerCallbackQuery($callbackId);
+            if($user){
+                $this->cancelWizard($user, $chatId);
+            }
             return;
         }
 
@@ -1002,7 +1019,7 @@ class TelegramService
 
             $this->answerCallbackQuery($callbackId);
             $this->editMessageText($chatId, $messageId, "Kun: {$label} ✅");
-            $this->sendMessage($chatId, "Task nomini kiriting (masalan: Sport):");
+            $this->sendMessage($chatId, "Task nomini kiriting (masalan: Sport):", [$this->cancelButtonRow()]);
             return;
         }
 
@@ -1065,7 +1082,7 @@ class TelegramService
         } else {
             $user->update(['bot_state' => 'awaiting_task_value_unit']);
             $unitExample = $type === TaskType::Duration->value ? '30 daqiqa' : '20 sahifa';
-            $this->sendMessage($chatId, "Qiymat va birlikni yozing (masalan: {$unitExample}):");
+            $this->sendMessage($chatId, "Qiymat va birlikni yozing (masalan: {$unitExample}):", [$this->cancelButtonRow()]);
         }
     }
 
@@ -1087,7 +1104,7 @@ class TelegramService
 
         $this->editMessageText($chatId, $messageId, "Eslatma: vaqt kiriting ⌛");
         $user->update(['bot_state' => 'awaiting_task_reminder_time']);
-        $this->sendMessage($chatId, "Eslatma vaqtini kiriting (masalan 07:00):");
+        $this->sendMessage($chatId, "Eslatma vaqtini kiriting (masalan 07:00):", [$this->cancelButtonRow()]);
     }
 
     private function handlePlanMoreCallback(string $callbackId, int $chatId, int $messageId, ?int $telegramId, string $data){
@@ -1145,7 +1162,7 @@ class TelegramService
         }
 
         $user->update(['bot_state' => 'editing_plan_rename', 'bot_state_data' => ['plan_id' => $plan->id]]);
-        $this->sendMessage($chatId, "Yangi reja nomini kiriting:");
+        $this->sendMessage($chatId, "Yangi reja nomini kiriting:", [$this->cancelButtonRow()]);
     }
 
     private function handleActivatePlanCallback(string $callbackId, int $chatId, ?int $telegramId, string $data){
@@ -1247,7 +1264,7 @@ class TelegramService
         }
 
         $user->update(['bot_state' => $state, 'bot_state_data' => ['group_key' => $groupKey]]);
-        $this->sendMessage($chatId, $prompt);
+        $this->sendMessage($chatId, $prompt, [$this->cancelButtonRow()]);
     }
 
     private function handleEditTaskDaysStart(string $callbackId, int $chatId, ?int $telegramId, string $data){
