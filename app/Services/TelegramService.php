@@ -5,6 +5,7 @@ use App\Enums\TaskType;
 use App\Models\DailyPlan;
 use App\Models\DailyPlanTask;
 use App\Models\Friendship;
+use App\Models\PromoChannel;
 use App\Models\User;
 use App\Models\WeeklyPlan;
 use App\Models\WeeklyPlanTask;
@@ -74,6 +75,29 @@ class TelegramService
     if(isset($update['callback_query'])){
         $this->handleCallbackQuery($update['callback_query']);
     }
+    if(isset($update['my_chat_member'])){
+        $this->handleMyChatMember($update['my_chat_member']);
+    }
+    }
+
+    private function handleMyChatMember(array $myChatMember){
+        $chatId = $myChatMember['chat']['id'] ?? null;
+        $title = $myChatMember['chat']['title'] ?? null;
+        $newStatus = $myChatMember['new_chat_member']['status'] ?? null;
+
+        if(!$chatId){
+            return;
+        }
+
+        if(in_array($newStatus, ['member', 'administrator', 'creator'])){
+            PromoChannel::updateOrCreate(['chat_id' => $chatId], ['title' => $title]);
+            $this->sendMessage($chatId, "👋 Salom! Men — intizom botiman. Sizlarga vaqti-vaqti bilan foydali maslahatlar va bot haqida ma'lumot yuborib turaman.");
+            return;
+        }
+
+        if(in_array($newStatus, ['left', 'kicked'])){
+            PromoChannel::where('chat_id', $chatId)->delete();
+        }
     }
 
     private function handleMessage(array $message){
