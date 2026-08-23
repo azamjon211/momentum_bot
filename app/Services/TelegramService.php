@@ -152,7 +152,7 @@ class TelegramService
             return [['text' => $label, 'callback_data' => "complete_task:{$task->id}"]];
         })->all();
 
-        $this->sendMessage($chatId, "Bugungi tasklaringiz (bajarish uchun bosing):", $buttons);
+        $this->sendMessage($chatId, "📋 <b>Bugungi tasklaringiz</b> (bajarish uchun bosing):", $buttons, 'HTML');
     }
 
     private function handleFriendsList(int $telegramId, int $chatId){
@@ -371,8 +371,13 @@ class TelegramService
             $this->weeklyPlanService->activate($plan);
             $this->dailyPlanService->generateForDate($user, now($user->timezone));
             $taskCount = $plan->tasks()->count();
-            $duration = $plan->duration_days ? "{$plan->duration_days} kunlik" : "doimiy";
-            $this->sendMessage($chatId, "✅ \"{$plan->name}\" rejasi ({$duration}, {$taskCount} ta task) faollashtirildi. \"".self::MENU_TODAY."\" tugmasidan bugungi tasklaringizni ko'rishingiz mumkin.");
+            $duration = $plan->duration_days ? "{$plan->duration_days} kun" : "Cheksiz";
+            $text = "🎉 <b>Reja faollashtirildi!</b>\n\n"
+                ."📌 {$plan->name}\n"
+                ."📅 Muddat: {$duration}\n"
+                ."📝 Tasklar: {$taskCount} ta\n\n"
+                ."\"".self::MENU_TODAY."\" tugmasidan bugungi tasklaringizni ko'rishingiz mumkin.";
+            $this->sendMessage($chatId, $text, null, 'HTML');
         } else {
             $plan?->delete();
             $this->sendMessage($chatId, "Hech qanday task qo'shilmadi, reja bekor qilindi.");
@@ -1118,7 +1123,7 @@ class TelegramService
         }
     }
 
-    public function sendMessage(int $chatId, string $text, ?array $inlineKeyboard = null){
+    public function sendMessage(int $chatId, string $text, ?array $inlineKeyboard = null, ?string $parseMode = null){
         $payload = [
             'chat_id' => $chatId,
             'text' => $text,
@@ -1126,7 +1131,19 @@ class TelegramService
         if($inlineKeyboard){
             $payload['reply_markup'] = json_encode(['inline_keyboard' => $inlineKeyboard]);
         }
+        if($parseMode){
+            $payload['parse_mode'] = $parseMode;
+        }
         Http::post('https://api.telegram.org/bot'.config('services.telegram.bot_token').'/sendMessage', $payload);
+    }
+
+    public function sendReminderBatch(int $chatId, $tasks){
+        $lines = $tasks->values()->map(fn($task, $index) => ($index + 1).". {$task->title}")->implode("\n");
+        $text = "⏰ <b>Eslatma</b>\n\nBajarilmagan tasklaringiz:\n{$lines}";
+
+        $buttons = $tasks->map(fn($task) => [['text' => "✅ {$task->title}", 'callback_data' => "complete_task:{$task->id}"]])->all();
+
+        $this->sendMessage($chatId, $text, $buttons, 'HTML');
     }
 
     public function answerCallbackQuery(string $callbackQueryId, string $text = ''){

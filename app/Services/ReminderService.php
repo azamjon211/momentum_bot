@@ -13,6 +13,9 @@ class ReminderService
             ->whereNotNull('remind_at')
             ->with(['dailyPlan.user', 'reminders'])
             ->get();
+
+        $dueTasks = collect();
+
         foreach ($tasks as $task) {
             $user = $task->dailyPlan->user;
             $localNow = now($user->timezone);
@@ -20,19 +23,22 @@ class ReminderService
             if ($localNow->format('H:i:s') < $task->remind_at) {
                 continue;
             }
-            $lastReminder = $task->reminders->sortByDesc('sent_at')->first();
 
+            $lastReminder = $task->reminders->sortByDesc('sent_at')->first();
             if ($lastReminder && $lastReminder->sent_at->diffInMinutes(now()) < 60) {
                 continue;
             }
 
-            $this->telegramService->sendMessage(
-                $user->telegram_id,
-                "⏰ Eslatma: \"{$task->title}\" hali bajarilmagan",
-                [[['text' => '✅ Bajardim', 'callback_data' => "complete_task:{$task->id}"]]]
-            );
+            $dueTasks->push($task);
+        }
 
-            $task->reminders()->create(['sent_at' => now()]);
+        foreach ($dueTasks->groupBy(fn ($task) => $task->dailyPlan->user_id) as $userTasks) {
+            $user = $userTasks->first()->dailyPlan->user;
+            $this->telegramService->sendReminderBatch($user->telegram_id, $userTasks->sortBy('title')->values());
+
+            foreach ($userTasks as $task) {
+                $task->reminders()->create(['sent_at' => now()]);
+            }
         }
     }
 
