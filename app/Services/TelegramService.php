@@ -1,6 +1,7 @@
 <?php
 
 namespace App\Services;
+use App\Models\DailyPlan;
 use App\Models\DailyPlanTask;
 use App\Models\Friendship;
 use App\Models\User;
@@ -8,6 +9,11 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
 class TelegramService
 {
+    private const MENU_TODAY = '📋 Bugungi tasklarim';
+    private const MENU_FRIENDS = '👥 Do\'stlarim';
+    private const MENU_INVITE = '➕ Do\'st taklif qilish';
+    private const MENU_HELP = 'ℹ️ Yordam';
+
     public function __construct(
         private DailyPlanService $dailyPlanService,
         private FriendshipService $friendshipService,
@@ -33,15 +39,19 @@ class TelegramService
             $this->handleStart($telegramId, $chatId, $firstName, $payload);
             return;
         }
-        if($command === '/invite'){
+        if($command === '/invite' || $text === self::MENU_INVITE){
             $this->handleInvite($telegramId, $chatId);
             return;
         }
-        if($command === '/bugun'){
-            $this->handleToday($chatId);
+        if($command === '/bugun' || $text === self::MENU_TODAY){
+            $this->handleToday($telegramId, $chatId);
             return;
         }
-        if($command === '/help'){
+        if($text === self::MENU_FRIENDS){
+            $this->handleFriendsList($telegramId, $chatId);
+            return;
+        }
+        if($command === '/help' || $text === self::MENU_HELP){
             $this->handleHelp($chatId);
             return;
         }
@@ -66,25 +76,71 @@ class TelegramService
             $this->handleFriendInvite($user, $inviteCode);
         }
 
-        $this->handleHelp($chatId);
+        $this->sendMainMenu($chatId, "Quyidagi menyudan foydalaning:");
     }
 
-    private function handleToday(int $chatId){
-        $this->sendMessage($chatId, "Bugungi tasklaringiz:", [
-            [['text' => '📋 Bugungi tasklarim', 'web_app' => ['url' => $this->miniAppUrl()]]],
-        ]);
+    private function handleToday(int $telegramId, int $chatId){
+        $user = User::where('telegram_id', $telegramId)->first();
+        if(!$user){
+            $this->sendMessage($chatId, "Avval /start bosing.");
+            return;
+        }
+
+        $dailyPlan = DailyPlan::where('user_id', $user->id)
+            ->whereDate('date', now($user->timezone)->toDateString())
+            ->with('tasks')
+            ->first();
+
+        $tasks = $dailyPlan?->tasks ?? collect();
+
+        if($tasks->isEmpty()){
+            $this->sendMessage($chatId, "Bugun uchun task yo'q.");
+            return;
+        }
+
+        $buttons = $tasks->map(function($task){
+            $label = $task->is_done ? "✅ {$task->title}" : "⬜ {$task->title}";
+            return [['text' => $label, 'callback_data' => "complete_task:{$task->id}"]];
+        })->all();
+
+        $this->sendMessage($chatId, "Bugungi tasklaringiz (bajarish uchun bosing):", $buttons);
+    }
+
+    private function handleFriendsList(int $telegramId, int $chatId){
+        $user = User::where('telegram_id', $telegramId)->first();
+        if(!$user){
+            $this->sendMessage($chatId, "Avval /start bosing.");
+            return;
+        }
+
+        $friends = $this->friendshipService->acceptedFriendsOf($user);
+
+        if($friends->isEmpty()){
+            $this->sendMessage($chatId, "Hali do'stlaringiz yo'q. \"".self::MENU_INVITE."\" tugmasini bosib taklif yuboring.");
+            return;
+        }
+
+        $list = $friends->map(fn($friend) => "• {$friend->name}")->implode("\n");
+        $this->sendMessage($chatId, "Sizning do'stlaringiz:\n{$list}");
     }
 
     private function handleHelp(int $chatId){
-        $this->sendMessage($chatId, "Mavjud buyruqlar:\n"
-            ."/bugun — bugungi tasklaringizni ko'rish va bajarish\n"
-            ."/invite — do'stlaringizni taklif qilish havolasi\n"
-            ."/help — shu ro'yxat");
+        $this->sendMainMenu($chatId, "Mavjud bo'limlar:");
     }
 
-    private function miniAppUrl(): string
-    {
-        return rtrim(config('app.url'), '/') . '/miniapp/';
+    private function sendMainMenu(int $chatId, string $text){
+        $payload = [
+            'chat_id' => $chatId,
+            'text' => $text,
+            'reply_markup' => json_encode([
+                'keyboard' => [
+                    [self::MENU_TODAY, self::MENU_FRIENDS],
+                    [self::MENU_INVITE, self::MENU_HELP],
+                ],
+                'resize_keyboard' => true,
+            ]),
+        ];
+        Http::post('https://api.telegram.org/bot'.config('services.telegram.bot_token').'/sendMessage', $payload);
     }
 
     private function handleFriendInvite(User $user, string $inviteCode){

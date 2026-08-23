@@ -53,4 +53,14 @@ class FriendshipService
         $friendship->update(['status' => 'declined']);
         return $friendship->fresh();
     }
+
+    public function acceptedFriendsOf(User $user)
+    {
+        return Friendship::where('status', 'accepted')
+            ->where(function ($q) use ($user) {
+                $q->where('user_id', $user->id)->orWhere('friend_id', $user->id);
+            })
+            ->get()
+            ->map(fn (Friendship $friendship) => $friendship->user_id === $user->id ? $friendship->friend : $friendship->user);
+    }
 }
